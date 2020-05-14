@@ -1,6 +1,16 @@
 module ui
 
+import math
+import gg
+import gx
 import eventbus
+
+const (
+	scroll_handle_color = gx.rgb(200, 200, 200)
+	scroll_track_color = gx.rgb(230, 230, 230)
+	scroll_width = 12
+)
+
 
 enum Direction {
 	row
@@ -16,6 +26,7 @@ struct StackConfig {
 	stretch bool
 	direction Direction
 	margin	MarginConfig
+	scrollable bool
 }
 
 struct Stack {
@@ -33,6 +44,12 @@ mut:
 	stretch bool
 	direction Direction
 	margin 	MarginConfig
+	scrollable bool
+	scroll_height int
+	scrollbar_down_offset int
+	scrolling bool
+pub mut:	
+	scroll int
 }
 
 fn (b mut Stack) init(parent Layout) {
@@ -53,6 +70,12 @@ fn (b mut Stack) init(parent Layout) {
 	}
 	b.height -= b.margin.top + b.margin.bottom
 	b.width -= b.margin.left + b.margin.right
+	if b.scrollable {
+		b.width -= scroll_width
+		mut subscriber := parent.get_subscriber()
+		subscriber.subscribe_method(events.on_click, scrollbar_click, b)
+		subscriber.subscribe_method(events.on_mouse_move, scrollbar_move, b)
+	}
 	b.set_pos(b.x, b.y)
 	for child in b.children {
 		child.init(b)
@@ -69,10 +92,43 @@ fn stack(c StackConfig, children []Widget) &Stack {
 		stretch: c.stretch
 		direction: c.direction
 		margin: c.margin
+		scrollable: c.scrollable
 		children: children
 		ui: 0
 	}
 	return b
+}
+
+fn scrollbar_click(b mut Stack, e &MouseEvent, window &Window) {
+	pos := b.scroll_height - b.scroll
+	if e.button == 1 {
+		return
+	}
+	if e.action == 0 {
+		b.scrolling = false
+		return
+	}
+
+	scroll_frac := f32(b.scroll+1) / f32(pos + (b.scroll+1) - b.height)
+	page_height := int((250.0 / f32(pos + (b.scroll) + b.height)) * b.height)
+	scrollbar_pos := b.y + int(f32(b.height-page_height) * scroll_frac)
+
+	b.scrollbar_down_offset = e.y - scrollbar_pos
+	
+	if e.x >= b.x + b.width
+	&& e.x <= b.x + b.width + scroll_width
+	&& e.y >= scrollbar_pos
+	&& e.y <= scrollbar_pos + page_height {
+		b.scrolling = true
+		return
+	}
+	b.scrolling = false
+}
+
+fn scrollbar_move(b mut Stack, e &MouseEvent, window &Window) {
+	if b.scrolling {
+		b.scroll = int(math.min(math.max(0, int(f32(b.scroll_height) * (f32(e.y - b.scrollbar_down_offset - b.get_y_axis()) / f32(b.height)))), b.scroll_height - b.height))
+	}
 }
 
 fn (b mut Stack) set_pos(x, y int) {
@@ -90,6 +146,9 @@ fn (b mut Stack) propose_size(w, h int) (int,int) {
 		b.width = w
 		b.height = h
 	}
+	if b.scrollable {
+		b.width = w - scroll_width
+	}
 	return b.width, b.height
 }
 
@@ -101,6 +160,10 @@ fn (b mut Stack) draw() {
 	mut per_child_size := b.get_height()
 	mut pos := b.get_y_axis()
 	mut size := 0
+	if b.scrollable {
+		gg.scissor(b.x, b.y, b.width, b.height)
+		pos -= b.scroll
+	}
 	for child in b.children {
 		mut h := 0
 		mut w := 0
@@ -115,6 +178,16 @@ fn (b mut Stack) draw() {
 		child.draw()
 		pos += h + b.spacing
 		per_child_size -= h + b.spacing
+	}
+	b.scroll_height = pos + b.scroll
+	if b.scrollable {
+		gg.scissor(0, 0, b.ui.window.width, b.ui.window.height)
+		// + 1 to prevent / by 0
+		scroll_frac := f32(b.scroll+1) / f32(pos + (b.scroll+1) - b.height)
+		page_height := int((250.0 / f32(pos + (b.scroll) + b.height)) * b.height)
+		scrollbar_pos := b.y + int(f32(b.height-page_height) * scroll_frac)
+		b.ui.gg.draw_rect(b.x+b.width, b.y, scroll_width, b.height, scroll_track_color)
+		b.ui.gg.draw_rect(b.x+b.width, scrollbar_pos, scroll_width, page_height, scroll_handle_color)
 	}
 	if b.stretch {return}
 	b.set_height(pos - b.get_y_axis())
